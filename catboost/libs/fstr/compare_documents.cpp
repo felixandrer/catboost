@@ -53,13 +53,14 @@ static double CalcNonSymmetricLeafValue(
     const auto treeSplits = model.ModelTrees->GetTreeSplits();
     const auto stepNodes = model.ModelTrees->GetNonSymmetricStepNodes();
 
-    while (!stepNodes[splitIdx].isTerminal()) {
+    int nextNodeStep = 0;
+    do {
         auto split = model.ModelTrees->GetBinFeatures()[treeSplits[splitIdx]];
         double featureValue = featureValues[split.FloatFeature.FloatFeature];
         double splitValue = split.FloatFeature.Split;
-        ui16 nextNodeStep = (featureValue > splitValue) ? stepNodes[splitIdx].RightSubtreeDiff : stepNodes[splitIdx].LeftSubtreeDiff;
+        nextNodeStep = (featureValue > splitValue) ? stepNodes[splitIdx].RightSubtreeDiff : stepNodes[splitIdx].LeftSubtreeDiff;
         splitIdx += nextNodeStep;
-    }
+    } while (nextNodeStep != 0);
     ui32 leafIdx = model.ModelTrees->GetNonSymmetricNodeIdToLeafId()[splitIdx];
     return model.ModelTrees->GetLeafValues()[leafIdx];
 }
@@ -84,11 +85,12 @@ static void CalcNonSymmetricIndicatorCoefficients(
         size_t leafOffset = model.ModelTrees->GetFirstLeafOffsets()[treeId];
         double leafValue = model.ModelTrees->GetLeafValues()[leafOffset + treeLeafIdxes[treeId]];
         size_t splitIdx = model.ModelTrees->GetTreeStartOffsets()[treeId];
-        while (!stepNodes[splitIdx].isTerminal()) {
+        int nextSplitStep = 0;
+        do {
             auto split = model.ModelTrees->GetBinFeatures()[treeSplits[splitIdx]];
             double featureValue = featureValues[split.FloatFeature.FloatFeature];
             double splitValue = split.FloatFeature.Split;
-            ui16 newSplitStep = featureValue > splitValue ? stepNodes[splitIdx].LeftSubtreeDiff : stepNodes[splitIdx].RightSubtreeDiff;
+            int newSplitStep = featureValue > splitValue ? stepNodes[splitIdx].LeftSubtreeDiff : stepNodes[splitIdx].RightSubtreeDiff;
             size_t newSplitIdx = splitIdx + newSplitStep;
             double newLeafValue = CalcNonSymmetricLeafValue(model, newSplitIdx, featureValues);
             double diff = newLeafValue - leafValue;
@@ -96,8 +98,9 @@ static void CalcNonSymmetricIndicatorCoefficients(
                 ui32 borderIdx = borderIdxForSplit[treeSplits[splitIdx]] + (featureValue < splitValue);
                 (*floatFeatureImpact)[split.FloatFeature.FloatFeature][borderIdx] += diff;
             }
-            splitIdx += featureValue > splitValue ? stepNodes[splitIdx].RightSubtreeDiff : stepNodes[splitIdx].LeftSubtreeDiff;
-        }
+            nextSplitStep = featureValue > splitValue ? stepNodes[splitIdx].RightSubtreeDiff : stepNodes[splitIdx].LeftSubtreeDiff;
+            splitIdx += nextSplitStep;
+        } while (nextSplitStep != 0);
     }
 
 }
@@ -171,9 +174,9 @@ TVector<TVector<double>> GetPredictionDiff(
 
     const auto& binSplits = model.ModelTrees->GetBinFeatures();
 
-    TVector<TVector<double>> floatFeatureLayout(dataProvider.GetObjectCount());
+    TVector<TVector<double>> floatFeatureValues(dataProvider.GetObjectCount());
     for (size_t idx=0; idx < dataProvider.GetObjectCount(); ++idx) {
-        floatFeatureLayout[idx].resize(model.GetNumFloatFeatures());
+        floatFeatureValues[idx].resize(model.GetNumFloatFeatures());
     }
 
     TVector<TVector<ui32>> docBorders(dataProvider.GetObjectCount());
@@ -190,7 +193,7 @@ TVector<TVector<double>> GetPredictionDiff(
                     for (const auto& border: feature.Borders) {
                         if (value > border) {
                             docBorders[docId].back()++;
-                            floatFeatureLayout[docId][feature.Position.FlatIndex] = value;
+                            floatFeatureValues[docId][feature.Position.FlatIndex] = value;
                         }
                     }
                 },
@@ -226,7 +229,7 @@ TVector<TVector<double>> GetPredictionDiff(
     for (size_t idx = 0; idx < dataProvider.GetObjectCount(); ++idx) {
         impact[idx] = GetPredictionDiffSingle(
             *dataProvider.ObjectsData.Get()->GetFeaturesLayout(),
-            floatFeatureLayout[idx],
+            floatFeatureValues[idx],
             model,
             borderIdxForSplit,
             docBorders[idx],
