@@ -79,11 +79,6 @@ struct TNonSymmetricTreeStepNode {
 
     TNonSymmetricTreeStepNode& operator=(const NCatBoostFbs::TNonSymmetricTreeStepNode* stepNode);
 
-    bool isTerminal() const {
-        return std::tie(LeftSubtreeDiff, RightSubtreeDiff)
-               == std::tie(TerminalMarker, TerminalMarker);
-    }
-
     bool operator==(const TNonSymmetricTreeStepNode& other) const {
         return std::tie(LeftSubtreeDiff, RightSubtreeDiff)
             == std::tie(other.LeftSubtreeDiff, other.RightSubtreeDiff);
