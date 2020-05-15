@@ -3,7 +3,7 @@
 #include "json_helper.h"
 #include "restrictions.h"
 
-#include <library/json/json_reader.h>
+#include <library/cpp/json/json_reader.h>
 
 #include <util/generic/algorithm.h>
 #include <util/generic/set.h>
@@ -165,8 +165,15 @@ static std::tuple<ui32, ui32, ELeavesEstimation, double> GetEstimationMethodDefa
             // doesn't have Newton
             break;
         }
+        case ELossFunction::StochasticRank: {
+            defaultEstimationMethod = ELeavesEstimation::Gradient;
+            defaultGradientIterations = 1;
+            // doesn't have Newton
+            break;
+        }
         case ELossFunction::UserPerObjMetric:
         case ELossFunction::UserQuerywiseMetric:
+        case ELossFunction::PythonUserDefinedMultiRegression:
         case ELossFunction::PythonUserDefinedPerObject: {
             //skip
             defaultNewtonIterations = 1;
@@ -584,7 +591,7 @@ void NCatboostOptions::TCatBoostOptions::Validate() const {
             ObliviousTreeOptions->LeavesEstimationBacktrackingType != ELeavesEstimationStepBacktracking::Armijo,
             "Backtracking type Armijo is supported only on GPU");
         CB_ENSURE(
-            lossFunction != ELossFunction::PythonUserDefinedPerObject
+            !IsUserDefined(lossFunction)
             || ObliviousTreeOptions->LeavesEstimationBacktrackingType == ELeavesEstimationStepBacktracking::No,
             "Backtracking is not supported for custom loss functions on CPU");
     }
@@ -669,6 +676,10 @@ void NCatboostOptions::TCatBoostOptions::Validate() const {
         CB_ENSURE(SystemOptions->IsSingleHost(), "Langevin boosting is supported in single-host mode only.");
     }
 
+    if (GetTaskType() == ETaskType::CPU && ObliviousTreeOptions->FeaturePenalties.IsSet()) {
+        ValidateFeaturePenaltiesOptions(ObliviousTreeOptions->FeaturePenalties.Get());
+    }
+
     if (ObliviousTreeOptions->GrowPolicy != EGrowPolicy::SymmetricTree) {
         CB_ENSURE(BoostingOptions->BoostingType == EBoostingType::Plain,
             "Ordered boosting is not supported for nonsymmetric trees.");
@@ -742,6 +753,7 @@ void NCatboostOptions::TCatBoostOptions::SetNotSpecifiedOptionsToDefaults() {
             }
             break;
         }
+        case ELossFunction::PythonUserDefinedMultiRegression:
         case ELossFunction::PythonUserDefinedPerObject: {
             ObliviousTreeOptions->LeavesEstimationBacktrackingType.SetDefault(ELeavesEstimationStepBacktracking::No);
             break;
@@ -774,6 +786,35 @@ void NCatboostOptions::TCatBoostOptions::SetNotSpecifiedOptionsToDefaults() {
             lossDescription.LossParams.Set(LossFunctionDescription->GetLossParams());
             lossDescription.LossFunction.Set(ELossFunction::FilteredDCG);
             MetricOptions->ObjectiveMetric.Set(lossDescription);
+            break;
+        }
+        case ELossFunction::StochasticRank: {
+            NCatboostOptions::TLossDescription lossDescription;
+            const auto& lossParams = LossFunctionDescription->GetLossParams();
+            CB_ENSURE(lossParams.contains("metric"), "StochasticRank requires metric param");
+            ELossFunction targetMetric = FromString<ELossFunction>(lossParams.at("metric"));
+            TMap<TString, TString> metricParams;
+            TSet<TString> validParams;
+            switch (targetMetric) {
+                case ELossFunction::DCG:
+                case ELossFunction::NDCG:
+                    validParams = {"top", "type", "denominator", "hints"};
+                    break;
+                case ELossFunction::PFound:
+                    validParams = {"top", "decay", "hints"};
+                    break;
+                default:
+                    CB_ENSURE(false, "StochasticRank does not support target_metric " << targetMetric);
+            }
+            for (const auto& paramName : validParams) {
+                if (lossParams.contains(paramName)) {
+                    metricParams[paramName] = lossParams.at(paramName);
+                }
+            }
+            lossDescription.LossParams.Set(metricParams);
+            lossDescription.LossFunction.Set(targetMetric);
+            MetricOptions->ObjectiveMetric.Set(lossDescription);
+            ObliviousTreeOptions->LeavesEstimationBacktrackingType.SetDefault(ELeavesEstimationStepBacktracking::No);
             break;
         }
         default: {
@@ -846,6 +887,9 @@ void NCatboostOptions::TCatBoostOptions::SetNotSpecifiedOptionsToDefaults() {
                 } else {
                     shrinkRate = 0.01;
                 }
+            }
+            if (ObliviousTreeOptions->LeavesEstimationBacktrackingType.NotSet()) {
+                ObliviousTreeOptions->LeavesEstimationBacktrackingType.SetDefault(ELeavesEstimationStepBacktracking::No);
             }
         }
 
